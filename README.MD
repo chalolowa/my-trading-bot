@@ -4,4 +4,3 @@
 Architecture diagram:
 
 ![Architecture diagram](diagram.png)
-
