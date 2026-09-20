@@ -9,7 +9,11 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 import pandas as pd
 from config.settings import settings
-from src.event_outbox import event_outbox
+from src.event_outbox import EventOutbox, event_outbox
+
+
+def _console(message: str) -> None:
+    print(f"[tradebot] {message}", flush=True)
 
 
 @dataclass
@@ -49,7 +53,10 @@ class Trade:
 class RiskManager:
     def __init__(self, db_path: str = None):
         self.db_path = db_path or settings.DB_PATH
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        parent = os.path.dirname(self.db_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        self.outbox = EventOutbox(self.db_path)
         self._init_db()
 
     def _init_db(self):
@@ -151,22 +158,27 @@ class RiskManager:
 
     def record_entry(self, trade: Trade):
         """Record trade entry in database."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT OR REPLACE INTO trades
-            (trade_id, instrument, direction, entry_price, stop_loss, take_profit,
-             position_size, entry_time, status, r_multiple)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            trade.trade_id, trade.instrument, trade.direction,
-            trade.entry_price, trade.stop_loss, trade.take_profit,
-            trade.position_size, trade.entry_time.isoformat(),
-            trade.status, 0.0
-        ))
-        conn.commit()
-        conn.close()
-        event_outbox.append(
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO trades
+                (trade_id, instrument, direction, entry_price, stop_loss, take_profit,
+                 position_size, entry_time, status, r_multiple)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                trade.trade_id, trade.instrument, trade.direction,
+                trade.entry_price, trade.stop_loss, trade.take_profit,
+                trade.position_size, trade.entry_time.isoformat(),
+                trade.status, 0.0
+            ))
+            conn.commit()
+            conn.close()
+        except sqlite3.Error as exc:
+            _console(f"SQLite trade entry failed (ticket={trade.trade_id}): {exc}")
+            raise
+        _console(f"SQLite trade entry succeeded (ticket={trade.trade_id})")
+        self.outbox.append(
             "trade_entered",
             {
                 "ticket": trade.trade_id,
@@ -184,7 +196,7 @@ class RiskManager:
     def record_event(self, event_type: str, payload: Dict[str, Any],
                      aggregate_id: int | str | None = None) -> str:
         """Append a replayable decision or execution event locally."""
-        return event_outbox.append(event_type, payload, aggregate_id)
+        return self.outbox.append(event_type, payload, aggregate_id)
 
     def record_exit(
             self,
@@ -194,33 +206,35 @@ class RiskManager:
             exit_reason: str = ""
     ) -> float:
         """Record trade exit and calculate R-multiple."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
 
         # Get trade details
-        cursor.execute("SELECT * FROM trades WHERE trade_id = ?", (trade_id,))
-        row = cursor.fetchone()
-        if not row:
-            conn.close()
-            return 0.0
+            cursor.execute("SELECT * FROM trades WHERE trade_id = ?", (trade_id,))
+            row = cursor.fetchone()
+            if not row:
+                conn.close()
+                _console(f"SQLite trade exit skipped: ticket={trade_id} was not found")
+                return 0.0
 
         # Calculate R multiple
-        entry_price = row[3]
-        stop_loss = row[5]
-        direction = row[2]
+            entry_price = row[3]
+            stop_loss = row[5]
+            direction = row[2]
 
-        risk = abs(entry_price - stop_loss)
-        if risk > 0:
-            if direction == "long":
-                r_multiple = (exit_price - entry_price) / risk
+            risk = abs(entry_price - stop_loss)
+            if risk > 0:
+                if direction == "long":
+                    r_multiple = (exit_price - entry_price) / risk
+                else:
+                    r_multiple = (entry_price - exit_price) / risk
             else:
-                r_multiple = (entry_price - exit_price) / risk
-        else:
-            r_multiple = 0.0
+                r_multiple = 0.0
 
-        exit_time = datetime.now().isoformat()
+            exit_time = datetime.now().isoformat()
 
-        cursor.execute("""
+            cursor.execute("""
                        UPDATE trades
                        SET exit_price  = ?,
                            pnl         = ?,
@@ -231,9 +245,13 @@ class RiskManager:
                        WHERE trade_id = ?
                        """, (exit_price, pnl, exit_time, r_multiple, exit_reason, trade_id))
 
-        conn.commit()
-        conn.close()
-        event_outbox.append(
+            conn.commit()
+            conn.close()
+        except sqlite3.Error as exc:
+            _console(f"SQLite trade exit failed (ticket={trade_id}): {exc}")
+            raise
+        _console(f"SQLite trade exit succeeded (ticket={trade_id})")
+        self.outbox.append(
             "trade_exited",
             {
                 "ticket": trade_id,
@@ -269,7 +287,10 @@ class RiskManager:
         """Calculate R-multiple statistics for dashboard."""
         conn = sqlite3.connect(self.db_path)
         df = pd.read_sql_query(
-            "SELECT r_multiple, pnl FROM trades WHERE status = 'closed'", conn
+            "SELECT r_multiple, pnl FROM trades WHERE status = 'closed' "
+            "AND exit_time >= datetime('now', ?)",
+            conn,
+            params=(f"-{int(days)} days",),
         )
         conn.close()
 
@@ -310,7 +331,6 @@ class RiskManager:
 
     def save_daily_summary(self):
         """Save end-of-day summary for historical tracking."""
-        stats = self.get_r_multiple_stats()
         today = datetime.now().strftime("%Y-%m-%d")
 
         conn = sqlite3.connect(self.db_path)
@@ -323,9 +343,11 @@ class RiskManager:
                               SUM(CASE WHEN r_multiple <= 0 THEN 1 ELSE 0 END),
                               SUM(r_multiple)
                        FROM trades
-                       WHERE status = 'closed' AND date (exit_time) = date ('now')
-                       """)
+                       WHERE status = 'closed' AND date(exit_time) = ?
+                       """, (today,))
         row = cursor.fetchone()
+        daily_r = row[3] or 0
+        daily_win_rate = (row[1] / row[0] * 100) if row[0] else 0
 
         cursor.execute("""
             INSERT OR REPLACE INTO daily_summary
@@ -333,7 +355,7 @@ class RiskManager:
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
             today, row[0] or 0, row[1] or 0, row[2] or 0,
-            row[3] or 0, stats["win_rate"], stats["min_r"]
+            daily_r, daily_win_rate, daily_r
         ))
 
         conn.commit()

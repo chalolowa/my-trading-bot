@@ -1,10 +1,13 @@
 """FastAPI entry point for the MT5 trading bot."""
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel, Field
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from config.mt5_client import mt5_client, normalize_symbol
 from config.settings import settings
@@ -27,21 +30,116 @@ class TradeRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"MT5 TradeBot starting on {settings.API_HOST}:{settings.API_PORT}")
-    await mongo_synchronizer.start()
-    yield
-    trading_cycle.stop()
-    await mongo_synchronizer.stop()
-    mt5_client.shutdown()
+    print(f"MT5 TradeBot starting on {settings.API_HOST}:{settings.API_PORT}", flush=True)
+    try:
+        mt5_client.connect()
+        await mongo_synchronizer.start()
+        await telegram.send_message_async(
+            f"MT5 TradeBot started on {settings.API_HOST}:{settings.API_PORT}"
+        )
+        yield
+    finally:
+        trading_cycle.stop()
+        await mongo_synchronizer.stop()
+        mt5_client.shutdown()
+        await telegram.send_message_async("MT5 TradeBot stopped.")
 
 
 app = FastAPI(title="MT5 TradeBot API", version="3.0.0", lifespan=lifespan)
+app.mount(
+    "/assets",
+    StaticFiles(directory=Path(__file__).resolve().parent / "assets"),
+    name="assets",
+)
 app.include_router(dashboard_router)
 
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    return {"message": "MT5 TradeBot API", "dashboard": "/dashboard/", "status": "online"}
+    return """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>MT5 TradeBot</title>
+        <style>
+            :root {
+                color-scheme: dark;
+                font-family: "Segoe UI", Arial, sans-serif;
+                background: #07111f;
+                color: #e5eefb;
+            }
+            * { box-sizing: border-box; }
+            body {
+                margin: 0;
+                min-height: 100vh;
+                display: grid;
+                place-items: center;
+                background:
+                    radial-gradient(circle at 15% 20%, #12375a 0, transparent 35%),
+                    radial-gradient(circle at 85% 80%, #173c37 0, transparent 35%),
+                    #07111f;
+            }
+            .card {
+                width: min(920px, calc(100% - 32px));
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                overflow: hidden;
+                border: 1px solid #29415d;
+                border-radius: 24px;
+                background: rgba(14, 29, 48, 0.9);
+                box-shadow: 0 24px 70px rgba(0, 0, 0, 0.35);
+            }
+            .content { padding: clamp(32px, 6vw, 72px); }
+            .eyebrow {
+                margin: 0 0 14px;
+                color: #57d7ff;
+                font-size: 0.8rem;
+                font-weight: 700;
+                letter-spacing: 0.16em;
+                text-transform: uppercase;
+            }
+            h1 { margin: 0 0 18px; font-size: clamp(2.2rem, 5vw, 4rem); line-height: 1; }
+            p { color: #a9bad0; line-height: 1.7; }
+            .button {
+                display: inline-block;
+                margin-top: 18px;
+                padding: 13px 22px;
+                border-radius: 10px;
+                background: #38bdf8;
+                color: #062033;
+                font-weight: 700;
+                text-decoration: none;
+                transition: transform 0.2s, background 0.2s;
+            }
+            .button:hover { transform: translateY(-2px); background: #7ddcff; }
+            .art { min-height: 360px; background: #0b1b2e; }
+            .art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+            @media (max-width: 700px) {
+                .card { grid-template-columns: 1fr; }
+                .art { min-height: 240px; order: -1; }
+            }
+        </style>
+    </head>
+    <body>
+        <main class="card">
+            <section class="content">
+                <p class="eyebrow">MT5 TradeBot</p>
+                <h1>Trade with clarity.</h1>
+                <p>
+                    Monitor market activity, review performance, and manage your
+                    trading workflow from one focused dashboard.
+                </p>
+                <a class="button" href="/dashboard/">Open dashboard</a>
+            </section>
+            <section class="art">
+                <img src="/assets/locha%20eng.jpg" alt="MT5 TradeBot">
+            </section>
+        </main>
+    </body>
+    </html>
+    """
 
 
 @app.get("/api/v1/health")

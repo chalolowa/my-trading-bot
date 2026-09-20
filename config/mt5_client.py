@@ -31,13 +31,17 @@ def normalize_symbol(symbol: str) -> str:
 
 
 class MT5Client:
+    MAGIC = 20240918
     def __init__(self) -> None:
         self._connected = False
 
     @property
     def api(self):
         if _mt5 is None:
-            raise RuntimeError("MetaTrader5 is not installed; run this on the Windows MT5 host")
+            raise RuntimeError(
+                "MetaTrader5 Python package is not installed. "
+                "Install it with: python -m pip install MetaTrader5"
+            )
         return _mt5
 
     def connect(self) -> None:
@@ -52,6 +56,12 @@ class MT5Client:
             kwargs["server"] = settings.MT5_SERVER
         if settings.MT5_PATH:
             kwargs["path"] = settings.MT5_PATH
+        if settings.MT5_PATH:
+            from pathlib import Path
+            if not Path(settings.MT5_PATH).is_file():
+                raise FileNotFoundError(
+                    f"MetaTrader 5 terminal was not found at {settings.MT5_PATH}"
+                )
         if not self.api.initialize(**kwargs):
             code, message = self.api.last_error()
             raise RuntimeError(f"MT5 initialize failed ({code}): {message}")
@@ -90,6 +100,27 @@ class MT5Client:
             raise RuntimeError(f"MT5 tick unavailable for {name}")
         return tick
 
+    def normalize_volume(self, symbol: str, volume: float) -> float:
+        """Convert a calculated volume to the broker's permitted lot size."""
+        info = self.api.symbol_info(self._symbol(symbol))
+        if info is None:
+            raise RuntimeError(f"MT5 symbol metadata unavailable for {symbol}")
+        step = float(getattr(info, "volume_step", 0.01) or 0.01)
+        minimum = float(getattr(info, "volume_min", step) or step)
+        maximum = float(getattr(info, "volume_max", volume) or volume)
+        raw_volume = float(volume)
+        if raw_volume < minimum:
+            return 0.0
+        normalized = min(maximum, (raw_volume // step) * step)
+        return round(normalized, 8)
+
+    def units_to_lots(self, symbol: str, units: float) -> float:
+        info = self.api.symbol_info(self._symbol(symbol))
+        if info is None:
+            raise RuntimeError(f"MT5 symbol metadata unavailable for {symbol}")
+        contract_size = float(getattr(info, "trade_contract_size", 100000) or 100000)
+        return self.normalize_volume(symbol, float(units) / contract_size)
+
     def get_account_info(self):
         self.connect()
         account = self.api.account_info()
@@ -104,6 +135,13 @@ class MT5Client:
             code, message = self.api.last_error()
             raise RuntimeError(f"MT5 positions request failed ({code}): {message}")
         return list(positions)
+
+    def get_bot_positions(self) -> list[Any]:
+        """Return only positions owned by this application."""
+        return [
+            position for position in self.get_open_positions()
+            if getattr(position, "magic", self.MAGIC) == self.MAGIC
+        ]
 
     def order_send(self, request: dict[str, Any]):
         self.connect()
@@ -124,11 +162,11 @@ class MT5Client:
         request = {
             "action": self.api.TRADE_ACTION_DEAL,
             "symbol": name,
-            "volume": float(volume),
+            "volume": self.normalize_volume(name, volume),
             "type": self.api.ORDER_TYPE_BUY if is_buy else self.api.ORDER_TYPE_SELL,
             "price": float(tick.ask if is_buy else tick.bid),
             "deviation": 20,
-            "magic": 20240918,
+            "magic": self.MAGIC,
             "comment": comment,
             "type_time": self.api.ORDER_TIME_GTC,
             "type_filling": self.api.ORDER_FILLING_IOC,
@@ -154,7 +192,7 @@ class MT5Client:
             "position": int(position.ticket),
             "price": float(tick.bid if is_buy else tick.ask),
             "deviation": 20,
-            "magic": 20240918,
+            "magic": self.MAGIC,
             "comment": "mt5-tradebot-close",
             "type_time": self.api.ORDER_TIME_GTC,
             "type_filling": self.api.ORDER_FILLING_IOC,

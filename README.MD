@@ -3,4 +3,4 @@
 
 Architecture diagram:
 
-![Architecture diagram](diagram.png)
+![Architecture diagram](assets/diagram.png)

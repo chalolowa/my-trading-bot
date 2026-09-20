@@ -1,17 +1,27 @@
 """Application configuration loaded from environment variables."""
-from pydantic import Field
+import os
+from pathlib import Path
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=Path(__file__).resolve().parent.parent / ".env",
+        env_file_encoding="utf-8",
+        env_ignore_empty=True,
+        extra="ignore",
+    )
 
     # MT5 credentials are optional at import time; the client reports a useful
     # error when a live operation is attempted without them.
     MT5_LOGIN: int | None = Field(default=None)
     MT5_PASSWORD: str | None = Field(default=None)
     MT5_SERVER: str | None = Field(default=None)
-    MT5_PATH: str | None = Field(default=None)
+    MT5_PATH: str | None = Field(
+        default=r"C:\Program Files\MetaTrader 5\terminal64.exe",
+        description="MetaTrader 5 terminal executable",
+    )
 
     # Telegram
     TELEGRAM_BOT_TOKEN: str = ""
@@ -34,17 +44,23 @@ class Settings(BaseSettings):
     MIN_ADX: float = 20.0
 
     # Dashboard
-    DASHBOARD_PORT: int = 8000
-    DASHBOARD_HOST: str = "0.0.0.0"
+    DASHBOARD_PORT: int = 8001
+    DASHBOARD_HOST: str = "127.0.0.1"
 
     # Database
-    DB_PATH: str = Field("data/trades.db", description="SQLite path")
-    MONGO_URI: str | None = None
+    DB_PATH: str = Field(
+        str(Path(__file__).resolve().parent.parent / "data" / "trades.db"),
+        description="SQLite path",
+    )
+    MONGO_URI: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("MONGO_URI", "MONGODB_URI"),
+    )
     MONGO_DATABASE: str = "mt5_tradebot"
     MONGO_COLLECTION: str = "events"
     OUTBOX_SYNC_INTERVAL_SECONDS: float = 5.0
     OUTBOX_BATCH_SIZE: int = 100
-    API_HOST: str = "0.0.0.0"
+    API_HOST: str = "127.0.0.1"
     API_PORT: int = 8001
 
 

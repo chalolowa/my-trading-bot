@@ -12,7 +12,12 @@ from config.settings import settings
 
 
 class StrategyEngine:
-    def __init__(self, config_path: str = "config/strategy.json"):
+    def __init__(self, config_path: str | None = None):
+        if config_path is None:
+            config_path = os.path.join(
+                os.path.dirname(os.path.dirname(__file__)), "config", "strategy.json"
+            )
+        self.config_path = config_path
         self.config = self._load_config(config_path)
         self.ta = TechnicalAnalyzer()
 
@@ -22,7 +27,7 @@ class StrategyEngine:
 
     def reload_config(self):
         """Hot-reload strategy without restarting bot."""
-        self.config = self._load_config("config/strategy.json")
+        self.config = self._load_config(self.config_path)
 
     def evaluate_entry(self, df: pd.DataFrame, direction: str) -> Tuple[bool, Dict[str, Any]]:
         """
@@ -83,7 +88,7 @@ class StrategyEngine:
             else:
                 return bool(latest.get("crossover_down", False))
 
-        value = signal.get(key.lower() if indicator != "SMA" else key)
+        value = signal.get(key.lower())
         if value is None or pd.isna(value):
             return False
 

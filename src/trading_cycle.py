@@ -44,13 +44,16 @@ class TradingCycle:
             return
         open_symbols = {normalize_symbol(position.symbol) for position in positions}
         for opportunity in self.scan_results[:3]:
+            if len(mt5_client.get_open_positions()) >= settings.MAX_OPEN_TRADES:
+                break
             symbol = normalize_symbol(opportunity["instrument"])
             if symbol not in open_symbols:
                 await self._evaluate_and_trade(symbol)
+                open_symbols.add(symbol)
 
     async def _evaluate_and_trade(self, symbol: str) -> None:
         df = mt5_client.copy_rates_from_pos(
-            symbol, strategy_engine.config.get("timeframe", "M15"), 0,
+            symbol, strategy_engine.config.get("timeframe", "M15"), 1,
             strategy_engine.config.get("candle_count", 200),
         )
         if df.empty:
@@ -82,9 +85,12 @@ class TradingCycle:
             return
 
         account = mt5_client.get_account_info()
-        volume = risk_manager.calculate_position_size(float(account.balance), entry_price, stop_loss, symbol)
-        if volume < 1:
+        units = risk_manager.calculate_position_size(
+            float(account.balance), entry_price, stop_loss, symbol
+        )
+        if units <= 0:
             return
+        volume = mt5_client.units_to_lots(symbol, units)
 
         result = mt5_client.place_market_order(symbol, direction, volume, stop_loss, take_profit)
         ticket = int(result.order)
@@ -99,7 +105,7 @@ class TradingCycle:
         )
 
     async def _close_all_positions(self, reason: str) -> None:
-        for position in mt5_client.get_open_positions():
+        for position in mt5_client.get_bot_positions():
             ticket = int(position.ticket)
             try:
                 result = mt5_client.close_position(ticket)
@@ -111,7 +117,7 @@ class TradingCycle:
     async def send_daily_summary(self) -> None:
         account = mt5_client.get_account_info()
         stats = risk_manager.get_r_multiple_stats()
-        telegram.send_message(
+        await telegram.send_message_async(
             f"Daily summary: balance={float(account.balance):.2f}, "
             f"trades={stats['total_trades']}, total R={stats['total_r']:+.2f}"
         )

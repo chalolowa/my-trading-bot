@@ -42,7 +42,7 @@ class MarketScanner:
     async def _analyze_instrument(self, instrument: str) -> Dict[str, Any]:
         """Analyze single instrument for trade readiness."""
         # Fetch data
-        df = mt5_client.copy_rates_from_pos(instrument, "M15", 0, 100)
+        df = mt5_client.copy_rates_from_pos(instrument, "M15", 1, 100)
         if df.empty or len(df) < 50:
             return {"tradable": False, "instrument": instrument, "reason": "insufficient_data"}
 

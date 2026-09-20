@@ -37,7 +37,14 @@ class TelegramNotifier:
 
     async def send_daily_summary_async(self, summary_text: str):
         """Async wrapper for daily summary."""
-        await self._send(f"<b>📊 Daily Summary</b>\n\n{summary_text}")
+        await self.send_message_async(f"<b>📊 Daily Summary</b>\n\n{summary_text}")
+
+    async def send_message_async(self, text: str):
+        """Send a message and wait for delivery when Telegram is enabled."""
+        if not self.enabled:
+            print(f"[TELEGRAM] {text}")
+            return
+        await self._send(text)
 
 
 telegram = TelegramNotifier()

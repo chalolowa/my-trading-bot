@@ -33,28 +33,23 @@ class MarketHours:
         current_time = now.time()
         open_time = time(settings.MARKET_OPEN_HOUR, 0)
         close_time = time(settings.MARKET_CLOSE_HOUR, 0)
-        return open_time <= current_time <= close_time
+        return now.weekday() < 5 and open_time <= current_time <= close_time
 
     def is_close_time(self) -> bool:
         """Check if we should close all positions (30 min before market close)."""
         now = self.now_est()
-        current_time = now.time()
-        close_buffer = time(
-            settings.MARKET_CLOSE_HOUR,
-            60 - settings.CLOSE_BUFFER_MINUTES
-        )
-        market_close = time(settings.MARKET_CLOSE_HOUR + 1, 0)  # 5 PM
-
-        return close_buffer <= current_time <= market_close
+        market_close = self.est.localize(datetime.combine(
+            now.date(), time(settings.MARKET_CLOSE_HOUR, 0)
+        ))
+        close_start = market_close - timedelta(minutes=settings.CLOSE_BUFFER_MINUTES)
+        return close_start <= now <= market_close
 
     def time_until_close(self) -> timedelta:
         """Get time remaining until forced close."""
         now = self.now_est()
-        close_time = datetime.combine(
-            now.date(),
-            time(settings.MARKET_CLOSE_HOUR, 60 - settings.CLOSE_BUFFER_MINUTES)
-        )
-        close_time = self.est.localize(close_time)
+        close_time = self.est.localize(datetime.combine(
+            now.date(), time(settings.MARKET_CLOSE_HOUR, 0)
+        )) - timedelta(minutes=settings.CLOSE_BUFFER_MINUTES)
 
         if now > close_time:
             # Market already closed for today
@@ -83,11 +78,8 @@ class MarketHours:
                 "reason": f"Too close to market close. {time_remaining} remaining. No new trades."
             }
 
-        # Check weekend (Friday after close, Sunday before open)
-        weekday = now.weekday()
-        if weekday == 4 and now.hour >= 17:  # Friday after 5 PM
-            return {"allowed": False, "reason": "Weekend - markets closed"}
-        if weekday == 6 and now.hour < 17:  # Sunday before 5 PM
+        # No new trades on either weekend day.
+        if now.weekday() >= 5:
             return {"allowed": False, "reason": "Weekend - markets closed"}
 
         return {

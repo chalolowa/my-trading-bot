@@ -26,7 +26,7 @@ def generate_r_multiple_chart(days: int = 30) -> Dict[str, Any]:
 
     for trade in sorted(closed, key=lambda x: x.exit_time or ""):
         if trade.r_multiple is not None:
-            dates.append(trade.exit_time[:10] if trade.exit_time else "")
+            dates.append(trade.exit_time.date().isoformat() if trade.exit_time else "")
             r_values.append(trade.r_multiple)
             running_total += trade.r_multiple
             cumulative_r.append(running_total)
@@ -196,5 +196,5 @@ async def api_stats(days: int = 30):
     return {
         "r_multiple_stats": risk_manager.get_r_multiple_stats(days),
         "daily_summary": risk_manager.get_daily_summary(),
-        "open_trades": [t.to_dict() for t in risk_manager.get_open_trades()]
+        "open_trades": risk_manager.get_open_trades()
     }
