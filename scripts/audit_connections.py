@@ -3,16 +3,17 @@
 Run from the project root: python scripts/audit_connections.py
 Never prints connection strings, credentials, or server exception messages.
 """
-from pathlib import Path
 import json
 import sqlite3
 import sys
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from dotenv import dotenv_values
 from pymongo import MongoClient
+
 from config.settings import settings
 
 

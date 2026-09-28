@@ -3,21 +3,24 @@ Market session detection and day-trade enforcement.
 Ensures no overnight positions and trades only during active sessions.
 """
 from datetime import datetime, time, timedelta
-from typing import Dict, Any
+from typing import Any
+
 import pytz
+
 from config.settings import settings
 
 
 class MarketHours:
     """
-    Forex market hours (EST/EDT):
+    Forex market hours (US/Eastern):
     - Sydney: 5 PM - 2 AM EST
     - Tokyo: 7 PM - 4 AM EST
     - London: 3 AM - 12 PM EST
     - New York: 8 AM - 5 PM EST
 
-    Day trading window: 8:00 AM - 4:00 PM EST (NY session)
-    Close all: 4:30 PM EST (30 min buffer before 5 PM close)
+    Forex weekly session: Sunday 5:00 PM through Friday 5:00 PM.
+    Positions are still flattened daily at 3:30 PM, with new entries cut off
+    45 minutes before that time.
     """
 
     def __init__(self):
@@ -28,59 +31,78 @@ class MarketHours:
         return datetime.now(self.est)
 
     def is_market_open(self) -> bool:
-        """Check if we're within trading hours."""
+        """Check whether the standard Sunday-evening to Friday-evening session is open."""
         now = self.now_est()
+        weekday = now.weekday()
         current_time = now.time()
-        open_time = time(settings.MARKET_OPEN_HOUR, 0)
-        close_time = time(settings.MARKET_CLOSE_HOUR, 0)
-        return now.weekday() < 5 and open_time <= current_time <= close_time
+        if weekday == 6:
+            return current_time >= time(settings.FOREX_WEEK_OPEN_HOUR, 0)
+        if weekday == 4:
+            return current_time < time(settings.FOREX_WEEK_CLOSE_HOUR, 0)
+        return weekday < 4
 
     def is_close_time(self) -> bool:
-        """Check if we should close all positions (30 min before market close)."""
+        """Check whether weekday positions should be flattened for the daily close."""
         now = self.now_est()
+        if now.weekday() >= 5:
+            return False
         market_close = self.est.localize(datetime.combine(
             now.date(), time(settings.MARKET_CLOSE_HOUR, 0)
         ))
         close_start = market_close - timedelta(minutes=settings.CLOSE_BUFFER_MINUTES)
-        return close_start <= now <= market_close
+        return now >= close_start
+
+    def time_until_new_trade_cutoff(self) -> timedelta:
+        """Get time remaining until the next weekday new-trade cutoff."""
+        now = self.now_est()
+        cutoff_hour = time(settings.MARKET_CLOSE_HOUR, 0)
+        cutoff_offset = timedelta(minutes=settings.CLOSE_BUFFER_MINUTES)
+
+        if now.weekday() < 5:
+            today_cutoff = self.est.localize(
+                datetime.combine(now.date(), cutoff_hour)
+            ) - cutoff_offset
+            if now >= today_cutoff:
+                return timedelta(0)
+            return today_cutoff - now
+
+        for days_ahead in range(1, 8):
+            cutoff_date = now.date() + timedelta(days=days_ahead)
+            if cutoff_date.weekday() < 5:
+                cutoff = self.est.localize(
+                    datetime.combine(cutoff_date, cutoff_hour)
+                ) - cutoff_offset
+                return cutoff - now
+
+        raise RuntimeError("Could not find the next weekday trade cutoff")
 
     def time_until_close(self) -> timedelta:
-        """Get time remaining until forced close."""
-        now = self.now_est()
-        close_time = self.est.localize(datetime.combine(
-            now.date(), time(settings.MARKET_CLOSE_HOUR, 0)
-        )) - timedelta(minutes=settings.CLOSE_BUFFER_MINUTES)
+        """Get time remaining until forced close (alias for time_until_new_trade_cutoff)."""
+        return self.time_until_new_trade_cutoff()
 
-        if now > close_time:
-            # Market already closed for today
-            return timedelta(0)
-        return close_time - now
-
-    def can_open_new_trade(self) -> Dict[str, Any]:
+    def can_open_new_trade(self) -> dict[str, Any]:
         """
         Comprehensive check before opening new trades.
         Returns dict with allowed flag and reason.
         """
-        now = self.now_est()
-
-        # Check market hours
+        # Check the weekly forex session.
         if not self.is_market_open():
             return {
                 "allowed": False,
-                "reason": f"Market closed. Trading hours: {settings.MARKET_OPEN_HOUR}:00-{settings.MARKET_CLOSE_HOUR}:00 EST"
+                "reason": (
+                    "Forex market closed. Weekly session: Sunday "
+                    f"{settings.FOREX_WEEK_OPEN_HOUR}:00-Friday "
+                    f"{settings.FOREX_WEEK_CLOSE_HOUR}:00 US/Eastern"
+                ),
             }
 
-        # Check if too close to close time
-        time_remaining = self.time_until_close()
+        # Preserve the bot's weekday day-trading cutoff.
+        time_remaining = self.time_until_new_trade_cutoff()
         if time_remaining < timedelta(minutes=45):
             return {
                 "allowed": False,
                 "reason": f"Too close to market close. {time_remaining} remaining. No new trades."
             }
-
-        # No new trades on either weekend day.
-        if now.weekday() >= 5:
-            return {"allowed": False, "reason": "Weekend - markets closed"}
 
         return {
             "allowed": True,

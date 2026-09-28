@@ -1,6 +1,6 @@
 """Application configuration loaded from environment variables."""
-import os
 from pathlib import Path
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -32,20 +32,18 @@ class Settings(BaseSettings):
     MAX_OPEN_TRADES: int = Field(3, description="Max concurrent day trades")
     BASE_CURRENCY: str = Field("USD", description="Account currency")
 
-    # Session Times (UTC-5 / EST)
-    MARKET_OPEN_HOUR: int = 8  # 8:00 AM EST (London pre-open)
-    MARKET_CLOSE_HOUR: int = 16  # 4:00 PM EST (close before 5 PM)
-    CLOSE_BUFFER_MINUTES: int = 30  # Close all 30 min before market close
+    # Forex weekly session and the bot's weekday day-trading close (US/Eastern).
+    FOREX_WEEK_OPEN_HOUR: int = 17  # Sunday 5:00 PM Eastern
+    FOREX_WEEK_CLOSE_HOUR: int = 17  # Friday 5:00 PM Eastern
+    MARKET_OPEN_HOUR: int = 8  # Legacy setting; retained for configuration compatibility
+    MARKET_CLOSE_HOUR: int = 16  # 4:00 PM Eastern
+    CLOSE_BUFFER_MINUTES: int = 30  # Close all 30 min before market close (3:30 PM Eastern)
 
     # Scanner
     SCANNER_INTERVAL_MIN: int = 30
     MIN_ATR_PIPS: float = 10.0
     MAX_SPREAD_PIPS: float = 3.0
     MIN_ADX: float = 20.0
-
-    # Dashboard
-    DASHBOARD_PORT: int = 8001
-    DASHBOARD_HOST: str = "127.0.0.1"
 
     # Database
     DB_PATH: str = Field(

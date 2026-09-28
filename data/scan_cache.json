@@ -1,0 +1,47 @@
+{
+  "timestamp": "2026-09-28T10:30:29.121074+00:00",
+  "results": [
+    {
+      "tradable": true,
+      "instrument": "USDJPY",
+      "composite_score": 100,
+      "trend": "bearish",
+      "adx": 38.2,
+      "rsi": 41.9,
+      "atr_pips": 16.0,
+      "spread_pips": 0.9,
+      "sma_9": 156.96644,
+      "sma_21": 157.26348,
+      "reasons": [],
+      "timestamp": "2026-09-28T10:30:28.040783+00:00"
+    },
+    {
+      "tradable": true,
+      "instrument": "GBPJPY",
+      "composite_score": 100,
+      "trend": "bearish",
+      "adx": 25.1,
+      "rsi": 41.8,
+      "atr_pips": 20.4,
+      "spread_pips": 1.6,
+      "sma_9": 208.16967,
+      "sma_21": 208.41762,
+      "reasons": [],
+      "timestamp": "2026-09-28T10:30:29.120658+00:00"
+    },
+    {
+      "tradable": true,
+      "instrument": "EURJPY",
+      "composite_score": 90,
+      "trend": "bearish",
+      "adx": 35.5,
+      "rsi": 36.5,
+      "atr_pips": 17.3,
+      "spread_pips": 1.4,
+      "sma_9": 178.56178,
+      "sma_21": 178.93543,
+      "reasons": [],
+      "timestamp": "2026-09-28T10:30:28.912325+00:00"
+    }
+  ]
+}

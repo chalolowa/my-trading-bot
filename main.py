@@ -1,36 +1,49 @@
 """FastAPI entry point for the MT5 trading bot."""
-from contextlib import asynccontextmanager
-from datetime import datetime
-from pathlib import Path
-from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
-from pydantic import BaseModel, Field
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from config.mt5_client import mt5_client, normalize_symbol
 from config.settings import settings
 from dashboard import dashboard_router
+from src.database import init_database
+from src.event_outbox import mongo_synchronizer
+from src.logger import _console
+from src.market_hours import market_hours
 from src.risk_manager import Trade, risk_manager
 from src.scanner import scanner
 from src.strategy_engine import strategy_engine
 from src.telegram_bot import telegram
 from src.trading_cycle import trading_cycle
-from src.event_outbox import mongo_synchronizer
 
 
 class TradeRequest(BaseModel):
     instrument: str
     direction: str = Field(pattern="^(BUY|SELL|LONG|SHORT)$")
     volume: float = Field(gt=0)
-    stop_loss: Optional[float] = None
-    take_profit: Optional[float] = None
+    stop_loss: float | None = None
+    take_profit: float | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"MT5 TradeBot starting on {settings.API_HOST}:{settings.API_PORT}", flush=True)
+    host_time = datetime.now().isoformat()
+    est_time = market_hours.now_est().strftime("%Y-%m-%d %H:%M:%S %Z")
+    _console(
+        f"MT5 TradeBot starting on {settings.API_HOST}:{settings.API_PORT} | "
+        f"Host local time: {host_time} | US/Eastern time: {est_time}",
+        level=logging.INFO,
+    )
+    init_database()
+    app.state.trading_task = None
     try:
         mt5_client.connect()
         await mongo_synchronizer.start()
@@ -40,6 +53,12 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         trading_cycle.stop()
+        task = getattr(app.state, "trading_task", None)
+        if task and not task.done():
+            try:
+                await asyncio.wait_for(task, timeout=5.0)
+            except (TimeoutError, asyncio.CancelledError, Exception):
+                pass
         await mongo_synchronizer.stop()
         mt5_client.shutdown()
         await telegram.send_message_async("MT5 TradeBot stopped.")
@@ -114,6 +133,14 @@ async def root():
                 transition: transform 0.2s, background 0.2s;
             }
             .button:hover { transform: translateY(-2px); background: #7ddcff; }
+            .actions { display: flex; flex-wrap: wrap; gap: 12px; }
+            button.button {
+                border: 0;
+                cursor: pointer;
+                font: inherit;
+            }
+            button.button:disabled { cursor: wait; opacity: 0.7; }
+            #autotrading-status { min-height: 1.5em; margin-top: 12px; }
             .art { min-height: 360px; background: #0b1b2e; }
             .art img { width: 100%; height: 100%; object-fit: cover; display: block; }
             @media (max-width: 700px) {
@@ -131,12 +158,42 @@ async def root():
                     Monitor market activity, review performance, and manage your
                     trading workflow from one focused dashboard.
                 </p>
-                <a class="button" href="/dashboard/">Open dashboard</a>
+                <div class="actions">
+                    <a class="button" href="/dashboard/">Open dashboard</a>
+                    <button class="button" id="start-autotrading" type="button">
+                        Start auto-trading
+                    </button>
+                </div>
+                <p id="autotrading-status" role="status" aria-live="polite"></p>
             </section>
             <section class="art">
                 <img src="/assets/locha%20eng.jpg" alt="MT5 TradeBot">
             </section>
         </main>
+        <script>
+            const startButton = document.getElementById("start-autotrading");
+            const statusMessage = document.getElementById("autotrading-status");
+
+            startButton.addEventListener("click", async () => {
+                startButton.disabled = true;
+                statusMessage.textContent = "Starting auto-trading...";
+
+                try {
+                    const response = await fetch("/api/v1/auto/start", { method: "POST" });
+                    const result = await response.json();
+                    if (!response.ok) {
+                        throw new Error(result.detail || "Unable to start auto-trading.");
+                    }
+                    statusMessage.textContent = result.status === "already_running"
+                        ? "Auto-trading is already running."
+                        : "Auto-trading started.";
+                } catch (error) {
+                    statusMessage.textContent = error.message;
+                } finally {
+                    startButton.disabled = false;
+                }
+            });
+        </script>
     </body>
     </html>
     """
@@ -147,23 +204,35 @@ async def health_check():
     try:
         account = mt5_client.get_account_info()
         positions = mt5_client.get_open_positions()
-        return {"status": "healthy", "mt5_connected": True,
-                "balance": float(account.balance), "open_positions": len(positions),
-                "timestamp": datetime.utcnow().isoformat()}
+        return {
+            "status": "healthy",
+            "mt5_connected": True,
+            "balance": float(account.balance),
+            "open_positions": len(positions),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
     except Exception as exc:
-        return {"status": "unhealthy", "mt5_connected": False, "error": str(exc),
-                "timestamp": datetime.utcnow().isoformat()}
+        return {
+            "status": "unhealthy",
+            "mt5_connected": False,
+            "error": str(exc),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
 
 
 @app.get("/api/v1/account")
 async def account_info():
     try:
         account = mt5_client.get_account_info()
-        return {"status": "success", "data": {
-            "balance": float(account.balance), "equity": float(account.equity),
-            "currency": account.currency,
-            "open_position_count": len(mt5_client.get_open_positions()),
-        }}
+        return {
+            "status": "success",
+            "data": {
+                "balance": float(account.balance),
+                "equity": float(account.equity),
+                "currency": account.currency,
+                "open_position_count": len(mt5_client.get_open_positions()),
+            },
+        }
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc))
 
@@ -172,12 +241,21 @@ async def account_info():
 async def get_positions():
     try:
         positions = mt5_client.get_open_positions()
-        return {"status": "success", "count": len(positions), "positions": [
-            {"ticket": int(p.ticket), "symbol": normalize_symbol(p.symbol),
-             "type": int(p.type), "volume": float(p.volume),
-             "price_open": float(p.price_open), "profit": float(p.profit)}
-            for p in positions
-        ]}
+        return {
+            "status": "success",
+            "count": len(positions),
+            "positions": [
+                {
+                    "ticket": int(p.ticket),
+                    "symbol": normalize_symbol(p.symbol),
+                    "type": int(p.type),
+                    "volume": float(p.volume),
+                    "price_open": float(p.price_open),
+                    "profit": float(p.profit),
+                }
+                for p in positions
+            ],
+        }
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc))
 
@@ -197,8 +275,12 @@ async def manual_trade(request: TradeRequest):
         direction = request.direction.lower()
         symbol = normalize_symbol(request.instrument)
         result = mt5_client.place_market_order(
-            symbol, direction, request.volume,
-            request.stop_loss, request.take_profit, "manual",
+            symbol,
+            direction,
+            request.volume,
+            request.stop_loss,
+            request.take_profit,
+            "manual",
         )
         ticket = int(result.order)
         risk_manager.record_event(
@@ -213,12 +295,18 @@ async def manual_trade(request: TradeRequest):
             },
             aggregate_id=ticket,
         )
-        risk_manager.record_entry(Trade(
-            trade_id=ticket, instrument=symbol, direction="long" if direction in {"buy", "long"} else "short",
-            entry_price=float(result.price), stop_loss=request.stop_loss or 0.0,
-            take_profit=request.take_profit or 0.0, position_size=request.volume,
-            entry_time=datetime.now(),
-        ))
+        risk_manager.record_entry(
+            Trade(
+                trade_id=ticket,
+                instrument=symbol,
+                direction="long" if direction in {"buy", "long"} else "short",
+                entry_price=float(result.price),
+                stop_loss=request.stop_loss or 0.0,
+                take_profit=request.take_profit or 0.0,
+                position_size=request.volume,
+                entry_time=datetime.now(timezone.utc),
+            )
+        )
         return {"status": "success", "ticket": ticket, "retcode": int(result.retcode)}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc))
@@ -246,16 +334,23 @@ async def close_all_trades():
 
 
 @app.post("/api/v1/auto/start")
-async def start_autotrading(background_tasks: BackgroundTasks):
+async def start_autotrading():
     if trading_cycle.running:
         return {"status": "already_running"}
-    background_tasks.add_task(trading_cycle.start)
+    task = asyncio.create_task(trading_cycle.start(), name="autotrading-cycle")
+    app.state.trading_task = task
     return {"status": "started"}
 
 
 @app.post("/api/v1/auto/stop")
 async def stop_autotrading():
     trading_cycle.stop()
+    task = getattr(app.state, "trading_task", None)
+    if task and not task.done():
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except (TimeoutError, asyncio.CancelledError, Exception):
+            pass
     return {"status": "stopped"}
 
 
@@ -279,14 +374,21 @@ async def get_historical(instrument: str, timeframe: str = "M15", count: int = 1
     if count < 1 or count > 5000:
         raise HTTPException(status_code=400, detail="count must be between 1 and 5000")
     try:
-        df = mt5_client.copy_rates_from_pos(normalize_symbol(instrument), timeframe, 0, count)
-        return {"status": "success", "instrument": normalize_symbol(instrument),
-                "timeframe": timeframe, "count": len(df),
-                "data": df.reset_index().to_dict("records")}
+        df = mt5_client.copy_rates_from_pos(
+            normalize_symbol(instrument), timeframe, 0, count
+        )
+        return {
+            "status": "success",
+            "instrument": normalize_symbol(instrument),
+            "timeframe": timeframe,
+            "count": len(df),
+            "data": df.reset_index().to_dict("records"),
+        }
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc))
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("main:app", host=settings.API_HOST, port=settings.API_PORT)

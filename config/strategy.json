@@ -61,6 +61,7 @@
 
   "instruments": [
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD",
-    "USDCAD", "EURGBP", "EURJPY", "GBPJPY"
+    "USDCAD", "EURGBP", "EURJPY", "GBPJPY",
+    "EURGBP", "AUDJPY"
   ]
 }

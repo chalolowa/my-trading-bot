@@ -5,10 +5,10 @@ Run from the repository root: python -m pytest tests/test_repo_audit.py -q
 """
 import asyncio
 import os
-from pathlib import Path
 import sqlite3
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -70,6 +70,7 @@ def test_outbox_persistence_retry_and_acknowledgement(tmp_path, monkeypatch):
         assert outbox.pending(1)[0]["attempts"] == 1
         assert synchronizer.sync_once() == 1
         assert synchronizer.sync_once() == 0
+        synchronizer.close()
     assert outbox.pending_count() == 0
     assert documents[event_id]["payload"] == {"value": 1}
     assert client.close.called
@@ -87,6 +88,36 @@ def test_market_weekday_gate(day, allowed):
     now = hours.est.localize(datetime(2026, 9, day, 10))
     with patch.object(hours, "now_est", return_value=now):
         assert hours.can_open_new_trade()["allowed"] is allowed
+
+
+@pytest.mark.parametrize(
+    "when,market_open",
+    [
+        (datetime(2026, 9, 20, 16, 59), False),  # Sunday before weekly open
+        (datetime(2026, 9, 20, 17, 0), True),  # Sunday weekly open
+        (datetime(2026, 9, 21, 2, 0), True),  # Overnight weekday session
+        (datetime(2026, 9, 25, 16, 59), True),  # Friday before weekly close
+        (datetime(2026, 9, 25, 17, 0), False),  # Friday weekly close
+        (datetime(2026, 9, 26, 12, 0), False),  # Saturday
+    ],
+)
+def test_forex_weekly_session_boundaries(when, market_open):
+    hours = MarketHours()
+    now = hours.est.localize(when)
+    with patch.object(hours, "now_est", return_value=now):
+        assert hours.is_market_open() is market_open
+
+
+def test_sunday_trade_cutoff_uses_next_weekday_flattening_time():
+    hours = MarketHours()
+    sunday_evening = hours.est.localize(datetime(2026, 9, 20, 18, 0))
+    with patch.object(hours, "now_est", return_value=sunday_evening):
+        assert hours.can_open_new_trade()["allowed"] is True
+        assert hours.time_until_new_trade_cutoff() == timedelta(hours=21, minutes=30)
+
+    friday_after_daily_cutoff = hours.est.localize(datetime(2026, 9, 25, 15, 31))
+    with patch.object(hours, "now_est", return_value=friday_after_daily_cutoff):
+        assert hours.can_open_new_trade()["allowed"] is False
 
 
 def test_dashboard_with_closed_trade():
@@ -114,9 +145,9 @@ def test_statistics_respect_requested_days(tmp_path):
 
 
 def test_cycle_respects_remaining_position_slots(monkeypatch):
-    pytest.importorskip("pandas_ta")
-    from src.trading_cycle import TradingCycle
     from unittest.mock import AsyncMock
+
+    from src.trading_cycle import TradingCycle
     cycle = TradingCycle()
     cycle.last_scan_time = datetime.now()
     cycle.scan_results = [{"instrument": symbol} for symbol in ["EURUSD", "GBPUSD", "AUDUSD"]]
@@ -135,7 +166,6 @@ def test_cycle_respects_remaining_position_slots(monkeypatch):
 
 
 def test_cycle_outside_hours_never_contacts_broker():
-    pytest.importorskip("pandas_ta")
     from src.trading_cycle import TradingCycle
     with patch("src.trading_cycle.market_hours.is_close_time", return_value=False), \
          patch("src.trading_cycle.market_hours.can_open_new_trade", return_value={"allowed": False}), \
@@ -145,9 +175,9 @@ def test_cycle_outside_hours_never_contacts_broker():
 
 
 def test_cycle_force_close_path():
-    pytest.importorskip("pandas_ta")
-    from src.trading_cycle import TradingCycle
     from unittest.mock import AsyncMock
+
+    from src.trading_cycle import TradingCycle
     cycle = TradingCycle()
     with patch("src.trading_cycle.market_hours.is_close_time", return_value=True), \
          patch.object(cycle, "_close_all_positions", new_callable=AsyncMock) as close:

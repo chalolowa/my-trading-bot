@@ -1,10 +1,10 @@
 """FastAPI dashboard routes for R-multiple tracking."""
 import json
-from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from typing import Any
+
 import plotly.graph_objects as go
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import HTMLResponse
 from plotly.utils import PlotlyJSONEncoder
 
 from src.risk_manager import risk_manager
@@ -12,7 +12,7 @@ from src.risk_manager import risk_manager
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
-def generate_r_multiple_chart(days: int = 30) -> Dict[str, Any]:
+def generate_r_multiple_chart(days: int = 30) -> dict[str, Any]:
     """Generate Plotly chart of R-multiples over time."""
     closed = risk_manager.get_closed_trades(days)
 
@@ -24,7 +24,7 @@ def generate_r_multiple_chart(days: int = 30) -> Dict[str, Any]:
     cumulative_r = []
     running_total = 0.0
 
-    for trade in sorted(closed, key=lambda x: x.exit_time or ""):
+    for trade in sorted(closed, key=lambda x: x.exit_time.isoformat() if x.exit_time else ""):
         if trade.r_multiple is not None:
             dates.append(trade.exit_time.date().isoformat() if trade.exit_time else "")
             r_values.append(trade.r_multiple)
@@ -49,7 +49,7 @@ def generate_r_multiple_chart(days: int = 30) -> Dict[str, Any]:
         y=cumulative_r,
         mode="lines+markers",
         name="Cumulative R",
-        line=dict(color="blue", width=2),
+        line={"color": "blue", "width": 2},
         yaxis="y2"
     ))
 
@@ -57,11 +57,11 @@ def generate_r_multiple_chart(days: int = 30) -> Dict[str, Any]:
         title="R-Multiple Performance Tracker",
         xaxis_title="Date",
         yaxis_title="R-Multiple per Trade",
-        yaxis2=dict(
-            title="Cumulative R",
-            overlaying="y",
-            side="right"
-        ),
+        yaxis2={
+            "title": "Cumulative R",
+            "overlaying": "y",
+            "side": "right"
+        },
         height=500,
         template="plotly_dark",
         hovermode="x unified"
@@ -73,24 +73,27 @@ def generate_r_multiple_chart(days: int = 30) -> Dict[str, Any]:
 @router.get("/", response_class=HTMLResponse)
 async def dashboard_home():
     """Main dashboard page."""
-    stats = risk_manager.get_r_multiple_stats(days=30)
-    daily = risk_manager.get_daily_summary()
+    try:
+        stats = risk_manager.get_r_multiple_stats(days=30)
+        daily = risk_manager.get_daily_summary()
 
-    chart_json = generate_r_multiple_chart(days=30)
-    chart_div = ""
-    if chart_json:
-        chart_div = f"""
-        <div id="r-chart"></div>
-        <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-        <script>
-            Plotly.newPlot('r-chart', {chart_json}.data, {chart_json}.layout);
-        </script>
-        """
+        chart_json = generate_r_multiple_chart(days=30)
+        chart_div = ""
+        if chart_json:
+            chart_data_js = json.dumps(chart_json)
+            chart_div = f"""
+            <div id="r-chart"></div>
+            <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+            <script>
+                const chartData = {chart_data_js};
+                Plotly.newPlot('r-chart', chartData.data, chartData.layout);
+            </script>
+            """
 
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
         <title>MT5 TradeBot Dashboard</title>
         <style>
             body {{ font-family: 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; padding: 20px; }}
@@ -106,8 +109,8 @@ async def dashboard_home():
             th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #334155; }}
             th {{ color: #94a3b8; font-weight: 600; }}
         </style>
-    </head>
-    <body>
+        </head>
+        <body>
         <div class="container">
             <div class="header">
                 <h1>🤖 MT5 TradeBot Dashboard</h1>
@@ -141,7 +144,7 @@ async def dashboard_home():
                 </div>
                 <div class="stat-card">
                     <div>Today's PnL</div>
-                    <div class="stat-value {'positive' if daily['daily_pnl'] > 0 else 'negative'}">${daily['daily_pnl']}</div>
+                    <div class="stat-value {'positive' if daily['daily_pnl'] > 0 else 'negative'}">${daily['daily_pnl']:.2f}</div>
                 </div>
                 <div class="stat-card">
                     <div>Open Trades</div>
@@ -158,17 +161,17 @@ async def dashboard_home():
                 <h3>Recent Closed Trades</h3>
                 <table>
                     <tr><th>Trade ID</th><th>Instrument</th><th>Dir</th><th>Entry</th><th>Exit</th><th>PnL</th><th>R-Multiple</th></tr>
-    """
+        """
 
-    recent = sorted(
-        risk_manager.get_closed_trades(days=7),
-        key=lambda x: x.exit_time or "",
-        reverse=True
-    )[:20]
+        recent = sorted(
+            risk_manager.get_closed_trades(days=7),
+            key=lambda x: x.exit_time.isoformat() if x.exit_time else "",
+            reverse=True
+        )[:20]
 
-    for t in recent:
-        pnl_class = "positive" if (t.pnl or 0) > 0 else "negative"
-        html += f"""
+        for t in recent:
+            pnl_class = "positive" if (t.pnl or 0) > 0 else "negative"
+            html += f"""
                     <tr>
                         <td>{t.trade_id}</td>
                         <td>{t.instrument}</td>
@@ -178,23 +181,28 @@ async def dashboard_home():
                         <td class="{pnl_class}">${t.pnl:.2f}</td>
                         <td class="{pnl_class}">{t.r_multiple:.2f}R</td>
                     </tr>
-        """
+            """
 
-    html += """
+        html += """
                 </table>
             </div>
         </div>
-    </body>
-    </html>
-    """
-    return html
+        </body>
+        </html>
+        """
+        return html
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Dashboard error: {exc}")
 
 
 @router.get("/api/stats")
 async def api_stats(days: int = 30):
     """API endpoint for raw stats."""
-    return {
-        "r_multiple_stats": risk_manager.get_r_multiple_stats(days),
-        "daily_summary": risk_manager.get_daily_summary(),
-        "open_trades": risk_manager.get_open_trades()
-    }
+    try:
+        return {
+            "r_multiple_stats": risk_manager.get_r_multiple_stats(days),
+            "daily_summary": risk_manager.get_daily_summary(),
+            "open_trades": risk_manager.get_open_trades()
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Stats error: {exc}")
